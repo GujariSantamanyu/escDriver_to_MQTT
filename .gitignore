@@ -1,0 +1,5 @@
+*.o
+*.d
+/escDriver_to_MQTT
+/core
+/core.*
