@@ -60,6 +60,40 @@ uint32 DataPointScale(uint16 id)
     return 1;
 }
 
+void PrintOperationStatus(uint32 value)
+{
+    static const char* const bitNames[] = {
+        "direction up", "direction down", "running", "ready to run",
+        nullptr, nullptr, nullptr, nullptr,
+        "inverter operation", "line operation", "standby speed", nullptr,
+        nullptr, "emergency stop", "common fault", "shutdown fault",
+        "up", "down", "running", "not ready", "start mode",
+        "construct mode", "inspect mode"
+    };
+
+    std::cout << "    (raw 0x" << std::hex << std::uppercase << std::setw(8)
+              << std::setfill('0') << value << std::dec << std::setfill(' ')
+              << ")" << std::endl;
+
+    for (uint32 bit = 0; bit < sizeof(bitNames) / sizeof(bitNames[0]); ++bit) {
+        if (bitNames[bit] != nullptr && (value & (uint32(1) << bit)) != 0)
+            std::cout << "    - " << bitNames[bit] << std::endl;
+    }
+
+    const char* modeName = "unknown";
+    switch ((value >> 4) & 0x0F) {
+        case 0: modeName = "no operation mode"; break;
+        case 1: modeName = "automatic mode"; break;
+        case 2: modeName = "continuous mode"; break;
+        case 3: modeName = "2 direction mode"; break;
+        case 4: modeName = "energy saving mode (standby speed)"; break;
+        case 15: modeName = "inspection mode"; break;
+    }
+    std::cout << "    - operation mode = " << modeName << std::endl;
+    std::cout << "    - version = "
+              << ((value & (uint32(1) << 31)) ? "ANSI" : "EN") << std::endl;
+}
+
 void PrintDataPoint(const DataPointReply& point)
 {
     std::cout << "  " << DataPointName(point.id) << " (0x"
@@ -94,6 +128,13 @@ void PrintDataPoint(const DataPointReply& point)
     if (!point.acknowledged)
         std::cout << " (not acknowledged)";
     std::cout << std::endl;
+
+    if (point.id == 0x1020 && point.type == 2 && point.raw.size() == 4) {
+        uint32 value = 0;
+        for (size_t i = 0; i < point.raw.size(); ++i)
+            value = (value << 8) | point.raw[i];
+        PrintOperationStatus(value);
+    }
 }
 }
 
