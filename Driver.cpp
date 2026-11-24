@@ -11,31 +11,113 @@
  */
 
 #include "Driver.h"
+#include "DataPoint.h"
+#include "MQTTPayload.h"
 #include <iostream>
 #include <iomanip>
 #include <sstream>
+#include <fstream>
+#include <limits>
+#include <stdexcept>
 #include <unistd.h>
 #include <ctime>
 
 namespace {
+const char* SerialConfigPath = "/home/sensorlab/Desktop/esc-config/EscRS0.ini";
+
+struct SerialConfig {
+    std::string portName;
+    uint32 baudRate;
+    uint32 dataBits;
+    uint32 parity;
+    uint32 stopBits;
+};
+
+std::string Trim(std::string value)
+{
+    const size_t first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos)
+        return std::string();
+    const size_t last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1);
+}
+
+bool ParseUint32(const std::string& text, uint32& value)
+{
+    try {
+        size_t end = 0;
+        const unsigned long parsed = std::stoul(text, &end);
+        if (end != text.size() || parsed > std::numeric_limits<uint32>::max())
+            return false;
+        value = static_cast<uint32>(parsed);
+        return true;
+    } catch (const std::invalid_argument&) {
+        return false;
+    } catch (const std::out_of_range&) {
+        return false;
+    }
+}
+
+bool ReadSerialConfig(SerialConfig& config)
+{
+    std::ifstream file(SerialConfigPath);
+    if (!file) {
+        std::cerr << "[Driver::Setup] ERROR: Cannot open serial configuration: "
+                  << SerialConfigPath << std::endl;
+        return false;
+    }
+
+    std::string line;
+    const std::string key = "RSParams=";
+    while (std::getline(file, line)) {
+        line = Trim(line);
+        if (line.compare(0, key.size(), key) != 0)
+            continue;
+
+        std::stringstream values(line.substr(key.size()));
+        std::string field;
+        std::vector<std::string> fields;
+        while (std::getline(values, field, ','))
+            fields.push_back(Trim(field));
+
+        if (fields.size() != 5 ||
+            !ParseUint32(fields[1], config.baudRate) ||
+            !ParseUint32(fields[2], config.dataBits) ||
+            !ParseUint32(fields[3], config.parity) ||
+            !ParseUint32(fields[4], config.stopBits) ||
+            fields[0].empty()) {
+            std::cerr << "[Driver::Setup] ERROR: Invalid RSParams in "
+                      << SerialConfigPath << std::endl;
+            return false;
+        }
+
+        config.portName = fields[0];
+        return true;
+    }
+
+    std::cerr << "[Driver::Setup] ERROR: RSParams not found in "
+              << SerialConfigPath << std::endl;
+    return false;
+}
+
 const char* DataPointName(uint16 id)
 {
     switch (id) {
-        case 0x1001: return "Version";
-        case 0x1010: return "Fault data";
-        case 0x1020: return "Operation status";
-        case 0x1021: return "Speed";
-        case 0x1022: return "Brake distance";
-        case 0x1023: return "WBS";
-        case 0x1080: return "Power on time";
-        case 0x1081: return "Breakdown time";
-        case 0x1082: return "Operation time up";
-        case 0x1083: return "Operation time down";
-        case 0x1084: return "Inspection time";
-        case 0x10A0: return "Running up";
-        case 0x10A1: return "Running down";
-        case 0x10A2: return "Number of faults";
-        case 0x10A3: return "Emergency stops";
+        case ECO3000_DP_VERSION: return "Version";
+        case ECO3000_DP_FAULT_STATUS: return "Fault data";
+        case ECO3000_DP_OPER_STATUS: return "Operation status";
+        case ECO3000_DP_SPEED: return "Speed";
+        case ECO3000_DP_BRAKE_DISTANCE: return "Brake distance";
+        case ECO3000_DP_WBS: return "WBS";
+        case ECO3000_DP_POWER_ON_TIME: return "Power on time";
+        case ECO3000_DP_BREAK_DOWN_TIME: return "Breakdown time";
+        case ECO3000_DP_OPERTIME_UP: return "Operation time up";
+        case ECO3000_DP_OPERTIME_DOWN: return "Operation time down";
+        case ECO3000_DP_INSPECTION_TIME: return "Inspection time";
+        case ECO3000_DP_RUNS_UP: return "Running up";
+        case ECO3000_DP_RUNS_DOWN: return "Running down";
+        case ECO3000_DP_FAULT_COUNT: return "Number of faults";
+        case ECO3000_DP_EMERGENCY_STOPS: return "Emergency stops";
         case 0x0020: return "Operation status (OVT 401)";
         case 0x0080: return "Power on time (OVT 401)";
         default: return "Unknown data point";
@@ -45,9 +127,13 @@ const char* DataPointName(uint16 id)
 const char* DataPointUnit(uint16 id)
 {
     switch (id) {
-        case 0x1021: return "m/sec";
-        case 0x1022: return "mm";
-        case 0x1080: case 0x1081: case 0x1082: case 0x1083: case 0x1084: return "s";
+        case ECO3000_DP_SPEED: return "m/sec";
+        case ECO3000_DP_BRAKE_DISTANCE: return "mm";
+        case ECO3000_DP_POWER_ON_TIME:
+        case ECO3000_DP_BREAK_DOWN_TIME:
+        case ECO3000_DP_OPERTIME_UP:
+        case ECO3000_DP_OPERTIME_DOWN:
+        case ECO3000_DP_INSPECTION_TIME: return "s";
         case 0x0080: return "min";
         default: return "";
     }
@@ -55,8 +141,8 @@ const char* DataPointUnit(uint16 id)
 
 uint32 DataPointScale(uint16 id)
 {
-    if (id == 0x1021) return 1000;
-    if (id == 0x1001) return 100;
+    if (id == ECO3000_DP_SPEED) return 1000;
+    if (id == ECO3000_DP_VERSION) return 100;
     return 1;
 }
 
@@ -129,7 +215,7 @@ void PrintDataPoint(const DataPointReply& point)
         std::cout << " (not acknowledged)";
     std::cout << std::endl;
 
-    if (point.id == 0x1020 && point.type == 2 && point.raw.size() == 4) {
+    if (point.id == ECO3000_DP_OPER_STATUS && point.type == 2 && point.raw.size() == 4) {
         uint32 value = 0;
         for (size_t i = 0; i < point.raw.size(); ++i)
             value = (value << 8) | point.raw[i];
@@ -193,8 +279,16 @@ bool Driver::Setup(
         }
     }
 
-    const std::string portName = "/dev/ttyUSB0";
-    if (!serialComm_.OpenPort(portName, 4800)) {
+    SerialConfig serialConfig;
+    if (!ReadSerialConfig(serialConfig)) {
+        return false;
+    }
+    if (!serialComm_.OpenPort(
+            serialConfig.portName,
+            serialConfig.baudRate,
+            serialConfig.dataBits,
+            serialConfig.parity,
+            serialConfig.stopBits)) {
         std::cerr << "[Driver::Setup] ERROR: Failed to open serial port" << std::endl;
         return false;
     }
@@ -271,15 +365,12 @@ void Driver::ProcessData()
     auto it = escalators.begin();
     std::advance(it, pollCount_ % escalators.size());
     const uint8 address = it->first;
-    static const std::pair<uint16, uint8> queryParameters[] = {
-        { 0x1021, 1 }, { 0x1080, 2 }, { 0x1081, 2 }, { 0x10A2, 2 },
-        { 0x1084, 2 }, { 0x1082, 2 }, { 0x1083, 2 }, { 0x10A0, 2 },
-        { 0x10A1, 2 }, { 0x10A3, 2 }, { 0x1022, 1 }, { 0x1023, 1 },
-        { 0x1020, 2 }
+    static const std::vector<std::pair<uint16, uint8>> queryParameters = {
+        { ECO3000_DP_FAULT_STATUS, 14 },
+        { ECO3000_DP_OPER_STATUS, 2 },
+        { ECO3000_DP_SPEED, 1 },
+        { ECO3000_DP_BRAKE_DISTANCE, 1 }
     };
-    const size_t queryIndex = pollCount_ % (sizeof(queryParameters) / sizeof(queryParameters[0]));
-    const uint16 queryId = queryParameters[queryIndex].first;
-    const uint8 queryType = queryParameters[queryIndex].second;
 
     auto sendAndReceive = [&](const std::vector<uint8>& request, const char* phase) {
         if (!serialComm_.SendMessage(address, request)) {
@@ -344,6 +435,11 @@ void Driver::ProcessData()
             for (size_t i = 0; i < values.size(); ++i)
                 PrintDataPoint(values[i]);
         }
+        if (!values.empty()) {
+            std::cout << "[MQTT] Payload: "
+                      << MQTTPayload::Build(std::to_string(address), values)
+                      << std::endl;
+        }
         return true;
     };
 
@@ -359,12 +455,10 @@ void Driver::ProcessData()
     sendAndReceive(request, "Poll B");
 
     messageCodec_.SetToggleBit(0);
-    std::vector<std::pair<uint16, uint8>> requestedPoint(1,
-        std::make_pair(queryId, queryType));
-    if (messageCodec_.EncodeQueryMsg(address, requestedPoint, request))
-        sendAndReceive(request, DataPointName(queryId));
+    if (messageCodec_.EncodeQueryMsg(address, queryParameters, request))
+        sendAndReceive(request, "Multi-point query");
     else
-        std::cerr << "[Driver::ProcessData] ERROR: Failed to encode data point query"
+        std::cerr << "[Driver::ProcessData] ERROR: Failed to encode multi-point query"
                   << std::endl;
 
     messageCodec_.SetToggleBit(1);

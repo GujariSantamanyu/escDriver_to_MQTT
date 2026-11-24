@@ -34,12 +34,19 @@ public:
 
     virtual ~SimpleSerialComm() { ClosePort(); }
 
-    /// Open and configure the serial port for raw 8E1 communication.
-    bool OpenPort(const std::string& portName, uint32 baudRate)
+    /// Open and configure the serial port for raw communication.
+    bool OpenPort(
+        const std::string& portName,
+        uint32 baudRate,
+        uint32 dataBits,
+        uint32 parity,
+        uint32 stopBits)
     {
         if (debugLevel_ > 0) {
-            std::cout << "[SimpleSerialComm] Opening port: " << portName 
-                      << " at " << baudRate << " baud" << std::endl;
+            std::cout << "[SimpleSerialComm] Opening port: " << portName
+                      << " at " << baudRate << " baud, " << dataBits
+                      << (parity == 0 ? "N" : parity == 1 ? "O" : "E")
+                      << stopBits << std::endl;
         }
 
         ClosePort();
@@ -66,9 +73,36 @@ public:
             return false;
         }
 
+        tcflag_t characterSize;
+        switch (dataBits) {
+            case 5: characterSize = CS5; break;
+            case 6: characterSize = CS6; break;
+            case 7: characterSize = CS7; break;
+            case 8: characterSize = CS8; break;
+            default:
+                std::cerr << "[SimpleSerialComm] ERROR: Unsupported data bits: "
+                          << dataBits << std::endl;
+                ClosePort();
+                return false;
+        }
+
+        if (parity > 2 || (stopBits != 1 && stopBits != 2)) {
+            std::cerr << "[SimpleSerialComm] ERROR: Unsupported parity or stop bits"
+                      << std::endl;
+            ClosePort();
+            return false;
+        }
+
         cfmakeraw(&settings);
-        settings.c_cflag &= ~(CSIZE | PARODD | CSTOPB);
-        settings.c_cflag |= CS8 | CLOCAL | CREAD | PARENB;
+        settings.c_cflag &= ~(CSIZE | PARENB | PARODD | CSTOPB);
+        settings.c_cflag |= characterSize | CLOCAL | CREAD;
+        if (parity != 0) {
+            settings.c_cflag |= PARENB;
+            if (parity == 1)
+                settings.c_cflag |= PARODD;
+        }
+        if (stopBits == 2)
+            settings.c_cflag |= CSTOPB;
 #ifdef CRTSCTS
         settings.c_cflag &= ~CRTSCTS;
 #endif
@@ -286,14 +320,8 @@ private:
                 return false;
 
             ssize_t result = read(portFd_, &value, 1);
-            if (result == 1) {
-                if (debugLevel_ > 2)
-                    std::cout << "[SimpleSerialComm] RX byte: 0x" << std::hex
-                              << std::uppercase << std::setw(2) << std::setfill('0')
-                              << static_cast<int>(value) << std::dec << std::setfill(' ')
-                              << std::endl;
+            if (result == 1)
                 return true;
-            }
             if (result < 0 && errno != EINTR && errno != EAGAIN)
                 return false;
         }

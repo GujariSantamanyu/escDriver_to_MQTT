@@ -1,0 +1,11 @@
+// run below in tesrminal
+
+g++ -std=c++17 -Wall -Wextra -ffunction-sections -fdata-sections -Wl,--gc-sections -pthread -x c++ -o /tmp/escdriver_status_print_test - <<'EOF'
+#include "/home/sensorlab/Desktop/escDriver_to_MQTT/Driver.cpp"
+int main()
+{
+    DataPointReply wbs{0x1023, 0x40, 0, true, {0}};
+    DataPointReply status{0x1020, 0x62, 2, true, {0, 0, 0, 29}};
+    PrintDataPoint(wbs);
+    PrintDataPoint(status);
+}

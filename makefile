@@ -6,6 +6,7 @@ CXXFLAGS = -g -std=c++17 -Wall -fPIC
 LDFLAGS = -lpthread
 
 SOURCES = Driver.cpp \
+          MQTTPayload.cpp \
           main.cpp
 
 OBJECTS = $(SOURCES:.cpp=.o)
